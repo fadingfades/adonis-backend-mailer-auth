@@ -19,7 +19,11 @@ router.get('/', async () => {
   }
 })
 
-router.post('/api/send-email', [MailersController, 'sendEmail']).use(middleware.mailer_auth())
+router.post('/api/send-email', [MailersController, 'sendEmail']).use(middleware.api_auth())
 
-router.post('/auth/register', [UsersController, 'register'])
-router.post('/auth/login', [UsersController, 'login'])
+router.post('/auth/register', [UsersController, 'register']).use(middleware.api_auth())
+router.post('/auth/login', [UsersController, 'login']).use(middleware.api_auth())
+
+router.post('/verify-otp', [UsersController, 'verifyOtp']).use(middleware.api_auth())
+router.get('/verify-otp', [UsersController, 'verifyLink']).use(middleware.api_auth())
+router.post('/resend-otp', [UsersController, 'resendOtp']).use(middleware.api_auth())
