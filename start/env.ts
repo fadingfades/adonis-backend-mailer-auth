@@ -22,6 +22,8 @@ export default await Env.create(new URL('../', import.meta.url), {
   MAILER_PORT: Env.schema.number(),
   MAILER_HOST: Env.schema.string(),
   API_KEY_MAILER: Env.schema.string(),
+  LOCAL_FRONTEND_URL: Env.schema.string(),
+  PRODUCTION_FRONTEND_URL: Env.schema.string(),
   /*
   |----------------------------------------------------------
   | Variables for configuring database connection

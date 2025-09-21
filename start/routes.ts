@@ -13,17 +13,17 @@ import UsersController from '#controllers/users_controller'
 import { middleware } from './kernel.js'
 
 router.get('/', async () => {
-  return {
-    nama: 'Anonim',
-    umur: 32
-  }
+  return { message: 'Adonis is running' }
 })
 
-router.post('/api/send-email', [MailersController, 'sendEmail']).use(middleware.api_auth())
+router.post('/api/send-email', [MailersController, 'sendEmail'])
 
-router.post('/auth/register', [UsersController, 'register']).use(middleware.api_auth())
-router.post('/auth/login', [UsersController, 'login']).use(middleware.api_auth())
+router.get('/me', [UsersController, 'me']).middleware([middleware.cookie_to_bearer(), middleware.auth()])
 
-router.post('/verify-otp', [UsersController, 'verifyOtp']).use(middleware.api_auth())
-router.get('/verify-otp', [UsersController, 'verifyLink']).use(middleware.api_auth())
-router.post('/resend-otp', [UsersController, 'resendOtp']).use(middleware.api_auth())
+router.post('/auth/register', [UsersController, 'register'])
+router.post('/auth/login', [UsersController, 'login'])
+router.post('/auth/logout', [UsersController, 'logout']).middleware([middleware.cookie_to_bearer(), middleware.auth()])
+
+router.post('/verify-otp', [UsersController, 'verifyOtp'])
+// router.get('/verify-otp', [UsersController, 'verifyLink'])
+router.post('/resend-otp', [UsersController, 'resendOtp'])

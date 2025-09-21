@@ -4,22 +4,56 @@ import { inject } from '@adonisjs/core'
 import MailerService from '#services/mailer_service'
 import { DateTime } from 'luxon'
 import limiter from '@adonisjs/limiter/services/main'
+import crypto from 'node:crypto'
+import env from '#start/env'
+import { timingSafeEqual } from 'node:crypto'
 
 function generateOtp(): string {
-    return Math.floor(100000 + Math.random() * 900000).toString()
+    return crypto.randomInt(100000, 1000000).toString()
 }
+
+function safeCompare(a: string, b: string): boolean {
+    const aBuf = Buffer.from(a)
+    const bBuf = Buffer.from(b)
+
+    if (aBuf.length !== bBuf.length) return false
+
+    return timingSafeEqual(aBuf, bBuf)
+}
+
+const FRONTEND_URL = env.get("NODE_ENV") === "production" ? env.get("PRODUCTION_FRONTEND_URL") : env.get("LOCAL_FRONTEND_URL")
 
 @inject()
 export default class UsersController {
     constructor(protected mailerService: MailerService) { }
 
+    public async me({ auth, response }: HttpContext) {
+        try {
+            const user = await auth.use('api').authenticate()
+            return response.ok({
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                is_verified: user.is_verified,
+            })
+        } catch (err) {
+            console.error('Error in me endpoint:', err)
+            return response.unauthorized({ status: false, message: 'Invalid token' })
+        }
+    }
+
     async register({ request, response }: HttpContext) {
-        const { email, password } = request.only(['email', 'password'])
+        const { name, email, password } = request.only(['name', 'email', 'password'])
+        const user = await User.findBy('email', email)
+        if (user) {
+            return response.conflict({ status: false, message: 'This email is already registered' })
+        }
 
         const otp = generateOtp()
-        const expiresAt = DateTime.now().plus({ minutes: 10 })
+        const expiresAt = DateTime.now().plus({ minutes: 15 })
 
-        const user = await User.create({
+        const userCreation = await User.create({
+            name,
             email,
             password,
             otp_code: otp,
@@ -27,59 +61,118 @@ export default class UsersController {
             otp_attempts: 0,
         })
 
-        const host = `${request.protocol()}://${request.host()}`
-        const verificationLink = `${host}/verify?verification_code=${otp}`
+        const verificationLink = `${FRONTEND_URL}/otp?otp_code=${otp}`
 
         try {
             await this.mailerService.sendEmail(
-                user.email,
+                userCreation.email,
                 'Verify Your Account',
                 `Your OTP code is: ${otp}\n\nYou can also verify using this link:\n${verificationLink}`
             )
 
-            return response.ok({ message: 'Email sent successfully!' })
+            return response.ok({ status: true, message: 'Email sent successfully!' })
         } catch (error) {
-            console.error({ message: 'Failed to send the email', error })
-            return response.internalServerError({ message: 'Email failed to send' })
+            console.error({ status: false, message: 'Failed to send the email', error })
+            return response.internalServerError({ status: false, message: 'Email failed to send' })
         }
     }
 
-    async login({ request }: HttpContext) {
+    async login({ request, response }: HttpContext) {
         const { email, password } = request.only(['email', 'password'])
-        const user = await User.verifyCredentials(email, password)
-        const token = await User.accessTokens.create(user)
+        if (!email?.trim() || !password?.trim()) {
+            return response.badRequest({ success: false, message: 'Email or password cannot be empty' })
+        }
 
-        return {
-            type: 'bearer',
-            value: token.value!.release(),
+        try {
+            const user = await User.verifyCredentials(email, password)
+            const token = await User.accessTokens.create(user)
+            const tokenValue = token.value!.release()
+
+            response.cookie('token', tokenValue, {
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: env.get('NODE_ENV') === 'production',
+                maxAge: 60 * 60 * 24 * 7
+            })
+
+            return response.ok({
+                type: 'bearer',
+                token: tokenValue,
+                user: {
+                    id: user.id,
+                    email: user.email,
+                    is_verified: user.is_verified,
+                },
+            })
+        } catch (error) {
+            return response.badRequest({ success: false, message: 'Invalid email or password' })
         }
     }
 
-    async verifyOtp({ request, response }: HttpContext) {
-        const { otp } = request.only(['otp'])
+    public async logout({ auth, response }: HttpContext) {
+        try {
+            const user = auth.getUserOrFail()
 
-        const user = await User.findBy('otp_code', otp)
-        if (!user) {
-            return response.notFound({ message: 'User not found' })
+            const token = user.currentAccessToken
+
+            await User.accessTokens.delete(user, token.identifier)
+
+            response.clearCookie('token')
+
+            return response.ok({ message: 'Logged out successfully' })
+        } catch (error) {
+            console.error('Logout error:', error)
+            return response.internalServerError({ status: false, message: 'Failed to logout' })
         }
+    }
 
-        if (user.is_verified) {
-            return response.badRequest({ message: 'User is already verified' })
-        }
-
-        if (!user.otp_code || user.otp_code !== otp) {
-            user.otp_attempts += 1
-            await user.save()
-            return response.badRequest({ message: 'Invalid OTP code' })
-        }
-
+    private async _verifyUser(user: User) {
         user.is_verified = true
         user.otp_code = null
         user.otp_expires_at = null
         user.otp_attempts = 0
         await user.save()
+    }
 
-        return response.ok({ message: 'User verified successfully' })
+    async verifyOtp({ request, response }: HttpContext) {
+        const { email, otp } = request.only(['email', 'otp'])
+
+        if (!email?.trim() || !otp?.trim()) {
+            return response.badRequest({ success: false, message: 'Email or OTP code cannot be empty' })
+        }
+
+        const user = await User.findBy('email', email)
+        if (!user || !user.otp_code || user.otp_code !== otp) {
+            if (user) {
+                user.otp_attempts += 1
+                await user.save()
+            }
+            return response.badRequest({ status: false, message: 'Invalid email or OTP' })
+        }
+
+        if (user.is_verified) {
+            return response.badRequest({ status: false, message: 'User is already verified' })
+        }
+
+        if (user.otp_attempts >= 5) {
+            return response.forbidden({ status: false, message: 'Too many failed OTP attempts. Please resend a new OTP' })
+        }
+
+        if (user.otp_expires_at && DateTime.now() > user.otp_expires_at) {
+            user.otp_code = null
+            user.otp_expires_at = null
+            await user.save()
+            return response.badRequest({ status: false, message: 'OTP has expired. Please resend a new one' })
+        }
+
+        if (!user.otp_code || !safeCompare(user.otp_code, otp)) {
+            user.otp_attempts += 1
+            await user.save()
+            return response.badRequest({ status: false, message: 'Invalid OTP code' })
+        }
+
+        await this._verifyUser(user)
+        return response.ok({ status: true, message: 'User verified successfully' })
     }
 
     async resendOtp({ request, response }: HttpContext) {
@@ -94,29 +187,28 @@ export default class UsersController {
         const remaining = await otpLimiter.remaining(limiterKey)
         if (remaining <= 0) {
             return response.tooManyRequests({
-                message: 'Too many OTP resend attempts. Please try again after 30 minutes',
+                status: false, message: 'Too many OTP resend attempts. Please try again after 30 minutes',
             })
         }
 
         const user = await User.findBy('email', email)
         if (!user) {
-            return response.notFound({ message: 'User not found' })
+            return response.notFound({ status: false, message: 'User not found' })
         }
 
         if (user.is_verified) {
-            return response.badRequest({ message: 'User is already verified' })
+            return response.badRequest({ status: false, message: 'User is already verified' })
         }
 
         const otp = generateOtp()
-        const expiresAt = DateTime.now().plus({ minutes: 10 })
+        const expiresAt = DateTime.now().plus({ minutes: 15 })
 
         user.otp_code = otp
         user.otp_expires_at = expiresAt
         user.otp_attempts = 0
         await user.save()
 
-        const host = `${request.protocol()}://${request.host()}`
-        const verificationLink = `${host}/verify?verification_code=${otp}`
+        const verificationLink = `${FRONTEND_URL}/otp?otp_code=${otp}`
 
         await this.mailerService.sendEmail(
             user.email,
@@ -126,33 +218,39 @@ export default class UsersController {
 
         await otpLimiter.increment(limiterKey)
 
-        return response.ok({ message: 'OTP has been resent to your email' })
+        return response.ok({ status: true, message: 'OTP has been resent to your email' })
     }
 
-    async verifyLink({ request, response }: HttpContext) {
-        const { verification_code } = request.only(['verification_code'])
+    // async verifyLink({ request, response }: HttpContext) {
+    //     const { verification_code } = request.only(['verification_code'])
 
-        const user = await User.findBy('otp_code', verification_code)
-        if (!user) {
-            return response.notFound({ message: 'User not found' })
-        }
+    //     const user = await User.findBy('otp_code', verification_code)
+    //     if (!user) {
+    //         return response.notFound({ status: false, message: 'Invalid OTP Code' })
+    //     }
 
-        if (user.is_verified) {
-            return response.badRequest({ message: 'User is already verified' })
-        }
+    //     if (user.is_verified) {
+    //         return response.badRequest({ status: false, message: 'User is already verified' })
+    //     }
 
-        if (!user.otp_code || user.otp_code !== verification_code) {
-            user.otp_attempts += 1
-            await user.save()
-            return response.badRequest({ message: 'Invalid OTP code' })
-        }
+    //     if (user.otp_attempts >= 5) {
+    //         return response.forbidden({ status: false, message: 'Too many failed OTP attempts. Please resend a new OTP' })
+    //     }
 
-        user.is_verified = true
-        user.otp_code = null
-        user.otp_expires_at = null
-        user.otp_attempts = 0
-        await user.save()
+    //     if (user.otp_expires_at && DateTime.now() > user.otp_expires_at) {
+    //         user.otp_code = null
+    //         user.otp_expires_at = null
+    //         await user.save()
+    //         return response.badRequest({ status: false, message: 'OTP has expired. Please resend a new one' })
+    //     }
 
-        return response.ok({ message: 'User verified successfully' })
-    }
+    //     if (!user.otp_code || user.otp_code !== verification_code) {
+    //         user.otp_attempts += 1
+    //         await user.save()
+    //         return response.badRequest({ status: false, message: 'Invalid OTP code' })
+    //     }
+
+    //     await this._verifyUser(user)
+    //     return response.ok({ status: true, message: 'User verified successfully' })
+    // }
 }

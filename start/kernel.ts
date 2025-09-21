@@ -40,5 +40,6 @@ router.use([() => import('@adonisjs/core/bodyparser_middleware'), () => import('
  */
 export const middleware = router.named({
   auth: () => import('#middleware/auth_middleware'),
-  api_auth: () => import('#middleware/api_key_auth_middleware')
+  api_auth: () => import('#middleware/api_key_auth_middleware'),
+  cookie_to_bearer: () => import('#middleware/cookie_to_bearer')
 })
