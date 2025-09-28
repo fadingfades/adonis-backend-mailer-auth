@@ -35,6 +35,7 @@ export default class UsersController {
                 name: user.name,
                 email: user.email,
                 is_verified: user.is_verified,
+                role: user.role
             })
         } catch (err) {
             console.error('Error in me endpoint:', err)
@@ -50,27 +51,48 @@ export default class UsersController {
         }
 
         const otp = generateOtp()
-        const expiresAt = DateTime.now().plus({ minutes: 15 })
+        const expiresAt = DateTime.now().plus({ minutes: 5 })
 
-        const userCreation = await User.create({
-            name,
-            email,
-            password,
-            otp_code: otp,
-            otp_expires_at: expiresAt,
-            otp_attempts: 0,
-        })
-
-        const verificationLink = `${FRONTEND_URL}/otp?otp_code=${otp}`
+        const verificationLink = `${FRONTEND_URL}/verify/${otp}`
 
         try {
             await this.mailerService.sendEmail(
-                userCreation.email,
+                email,
                 'Verify Your Account',
                 `Your OTP code is: ${otp}\n\nYou can also verify using this link:\n${verificationLink}`
             )
 
-            return response.ok({ status: true, message: 'Email sent successfully!' })
+            const userCreation = await User.create({
+                name,
+                email,
+                password,
+                otp_code: otp,
+                otp_expires_at: expiresAt,
+                otp_attempts: 0,
+            })
+
+            const token = await User.accessTokens.create(userCreation)
+            const tokenValue = token.value!.release()
+
+            response.cookie('token', tokenValue, {
+                httpOnly: true,
+                sameSite: 'lax',
+                secure: env.get('NODE_ENV') === 'production',
+                maxAge: 60 * 60 * 24 * 7
+            })
+
+            return response.ok({
+                type: 'bearer',
+                token: tokenValue,
+                user: {
+                    id: userCreation.id,
+                    email: userCreation.email,
+                    is_verified: userCreation.is_verified,
+                },
+                status: true,
+                message: 'Email sent successfully!'
+            })
+
         } catch (error) {
             console.error({ status: false, message: 'Failed to send the email', error })
             return response.internalServerError({ status: false, message: 'Email failed to send' })
@@ -201,14 +223,14 @@ export default class UsersController {
         }
 
         const otp = generateOtp()
-        const expiresAt = DateTime.now().plus({ minutes: 15 })
+        const expiresAt = DateTime.now().plus({ minutes: 5 })
 
         user.otp_code = otp
         user.otp_expires_at = expiresAt
         user.otp_attempts = 0
         await user.save()
 
-        const verificationLink = `${FRONTEND_URL}/otp?otp_code=${otp}`
+        const verificationLink = `${FRONTEND_URL}/verify/${otp}`
 
         await this.mailerService.sendEmail(
             user.email,
@@ -221,36 +243,66 @@ export default class UsersController {
         return response.ok({ status: true, message: 'OTP has been resent to your email' })
     }
 
-    // async verifyLink({ request, response }: HttpContext) {
-    //     const { verification_code } = request.only(['verification_code'])
+    async verifyLink({ request, response }: HttpContext) {
+        try {
+            const { verification_code } = request.only(['verification_code'])
 
-    //     const user = await User.findBy('otp_code', verification_code)
-    //     if (!user) {
-    //         return response.notFound({ status: false, message: 'Invalid OTP Code' })
-    //     }
+            const user = await User.findByOrFail('otp_code', verification_code)
+            if (!user) {
+                return response.notFound({
+                    status: false,
+                    message: 'Invalid OTP Code – no user found',
+                })
+            }
 
-    //     if (user.is_verified) {
-    //         return response.badRequest({ status: false, message: 'User is already verified' })
-    //     }
+            if (user.is_verified) {
+                return response.badRequest({
+                    status: false,
+                    message: 'User is already verified',
+                })
+            }
 
-    //     if (user.otp_attempts >= 5) {
-    //         return response.forbidden({ status: false, message: 'Too many failed OTP attempts. Please resend a new OTP' })
-    //     }
+            if (user.otp_attempts >= 5) {
+                return response.forbidden({
+                    status: false,
+                    message: 'Too many failed OTP attempts. Please resend a new OTP',
+                })
+            }
 
-    //     if (user.otp_expires_at && DateTime.now() > user.otp_expires_at) {
-    //         user.otp_code = null
-    //         user.otp_expires_at = null
-    //         await user.save()
-    //         return response.badRequest({ status: false, message: 'OTP has expired. Please resend a new one' })
-    //     }
+            if (user.otp_expires_at && DateTime.now() > user.otp_expires_at) {
+                user.otp_code = null
+                user.otp_expires_at = null
+                await user.save()
+                return response.badRequest({
+                    status: false,
+                    message: 'OTP has expired. Please request a new one',
+                })
+            }
 
-    //     if (!user.otp_code || user.otp_code !== verification_code) {
-    //         user.otp_attempts += 1
-    //         await user.save()
-    //         return response.badRequest({ status: false, message: 'Invalid OTP code' })
-    //     }
+            if (!user.otp_code || user.otp_code !== verification_code) {
+                user.otp_attempts += 1
+                await user.save()
+                return response.badRequest({
+                    status: false,
+                    message: 'Invalid OTP code – mismatch',
+                })
+            }
 
-    //     await this._verifyUser(user)
-    //     return response.ok({ status: true, message: 'User verified successfully' })
-    // }
+            // ✅ OTP valid → verify user
+            await this._verifyUser(user)
+            return response.ok({
+                status: true,
+                message: 'User verified successfully',
+            })
+        } catch (error) {
+            console.error('[verifyLink] Unexpected error:', error)
+
+            return response.internalServerError({
+                status: false,
+                message: 'An unexpected error occurred during verification',
+                error: error instanceof Error ? error.message : error,
+            })
+        }
+    }
+
 }

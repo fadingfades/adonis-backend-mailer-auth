@@ -25,5 +25,5 @@ router.post('/auth/login', [UsersController, 'login'])
 router.post('/auth/logout', [UsersController, 'logout']).middleware([middleware.cookie_to_bearer(), middleware.auth()])
 
 router.post('/verify-otp', [UsersController, 'verifyOtp'])
-// router.get('/verify-otp', [UsersController, 'verifyLink'])
+router.get('/verify-otp', [UsersController, 'verifyLink'])
 router.post('/resend-otp', [UsersController, 'resendOtp'])

@@ -24,6 +24,9 @@ export default class User extends compose(BaseModel, AuthFinder) {
   declare is_verified: boolean
 
   @column()
+  declare role: any
+
+  @column()
   declare otp_code: string | null
 
   @column()
