@@ -34,6 +34,7 @@ export default class UsersController {
                 id: user.id,
                 name: user.name,
                 email: user.email,
+                phone_number: user.phone_number,
                 is_verified: user.is_verified,
                 role: user.role
             })
@@ -301,6 +302,70 @@ export default class UsersController {
                 status: false,
                 message: 'An unexpected error occurred during verification',
                 error: error instanceof Error ? error.message : error,
+            })
+        }
+    }
+
+    public async updateProfile({ auth, request, response }: HttpContext) {
+        try {
+            const user = auth.user!
+            const { phoneNumber, name } = request.only(['phoneNumber', 'name'])
+
+            // Validate that at least one field is provided
+            if (!phoneNumber && !name) {
+                return response.status(400).json({
+                    success: false,
+                    error: 'At least one field (phoneNumber or name) is required.'
+                })
+            }
+
+            // Prepare update data
+            const updateData: Partial<{
+                phone_number: string | null
+                name: string
+            }> = {}
+
+            if (phoneNumber !== undefined) {
+                // Validate phone number format (basic validation)
+                if (phoneNumber && !/^\+?[\d\s\-\(\)]{10,}$/.test(phoneNumber.replace(/\s/g, ''))) {
+                    return response.status(400).json({
+                        success: false,
+                        error: 'Invalid phone number format.'
+                    })
+                }
+                updateData.phone_number = phoneNumber || null
+            }
+
+            if (name !== undefined) {
+                if (name && name.trim().length < 2) {
+                    return response.status(400).json({
+                        success: false,
+                        error: 'Name must be at least 2 characters long.'
+                    })
+                }
+                updateData.name = name.trim()
+            }
+
+            // Update user
+            await user.merge(updateData).save()
+
+            return response.json({
+                success: true,
+                message: 'Profile updated successfully',
+                data: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    phone_number: user.phone_number,
+                    is_verified: user.is_verified
+                }
+            })
+
+        } catch (error) {
+            console.error('Error updating profile:', error)
+            return response.status(500).json({
+                success: false,
+                error: 'Failed to update profile.'
             })
         }
     }
